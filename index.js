@@ -4,8 +4,6 @@
  */
 
 var uid2 = require('uid2');
-var redis = require('redis').createClient;
-var msgpack = require('notepack.io');
 var Adapter = require('socket.io-adapter');
 var debug = require('debug')('socket.io-redis');
 
@@ -49,11 +47,16 @@ function adapter(uri, opts) {
   // opts
   var pub = opts.pubClient;
   var sub = opts.subClient;
+  var serializer = opts.serializer;
+  var deserializer = opts.deserializer;
   var prefix = opts.key || 'socket.io';
   var requestsTimeout = opts.requestsTimeout || 5000;
 
   // init clients if needed
   function createClient() {
+    // lazy load in-case a pair of clients is provided already
+    let redis = require('redis').createClient;
+
     if (uri) {
       // handle uri string
       return redis(uri, opts);
@@ -64,6 +67,16 @@ function adapter(uri, opts) {
 
   if (!pub) pub = createClient();
   if (!sub) sub = createClient();
+
+  if(!serializer || !deserializer) {
+    if(serializer || deserializer) {
+      throw new Error('Must provide both an encoder and decoder or neither');
+    }
+
+    let msgpack = require('notepack.io');
+    serializer = (data) => msgpack.encode(data);
+    deserializer = (data) => msgpack.decode(data);
+  }
 
   // this server's key
   var uid = uid2(6);
@@ -99,6 +112,8 @@ function adapter(uri, opts) {
     }
     this.pubClient = pub;
     this.subClient = sub;
+    this.serializer = serializer;
+    this.deserializer = deserializer;
 
     var self = this;
 
@@ -145,7 +160,7 @@ function adapter(uri, opts) {
       return debug('ignore unknown room %s', room);
     }
 
-    var args = msgpack.decode(msg);
+    var args = this.deserializer(msg);
     var packet;
 
     if (uid === args.shift()) return debug('ignore same uid');
@@ -405,7 +420,7 @@ function adapter(uri, opts) {
   Redis.prototype.broadcast = function(packet, opts, remote){
     packet.nsp = this.nsp.name;
     if (!(remote || (opts && opts.flags && opts.flags.local))) {
-      var msg = msgpack.encode([uid, packet, opts]);
+      var msg = this.serializer([uid, packet, opts]);
       var channel = this.channel;
       if (opts.rooms && opts.rooms.length === 1) {
         channel += opts.rooms[0] + '#';
